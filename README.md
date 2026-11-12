@@ -16,6 +16,47 @@ Binalab has two money flows. One Stripe account handles both.
 
 **Why this Connect setup:** your SMEs run their own businesses and own their customers. So each one is the merchant of record (`dashboard: full`, `fees_collector: stripe`, `losses_collector: stripe`). Stripe carries the fraud and negative-balance risk, not Binalab. The same SME account also has a `customer` config, so Binalab can bill that SME for its software subscription.
 
+## BinaLab Studio → Stripe (payment links)
+
+This is the part BinaLab uses today. In Studio, open an invoice and press **"Buat link bayaran Stripe"**:
+
+1. Studio sends the signed-in admin's Firebase ID token to `POST /studio/invoices/:id/payment-link`.
+2. The server checks the login is in `STUDIO_ADMIN_EMAILS`, then reads `invoices/{id}` from Firestore. **Amounts come from Firestore, never from the browser.**
+3. It creates a Stripe invoice (items + SST line), finalises it, and Stripe emails it to the client. The client's email is required: Stripe won't issue an invoice without one.
+4. The hosted payment link is saved on the Firestore invoice. In Studio, "Hantar link di WhatsApp" opens WhatsApp with the link already in the message.
+5. When the client pays (FPX/card), the `invoice.paid` webhook sets the Studio invoice to **paid**. Studio updates live.
+
+| Route | What it does |
+|---|---|
+| `POST /studio/invoices/:id/payment-link` | Create a link, or return the open one |
+| `POST /studio/invoices/:id/void-payment-link` | Cancel the link, e.g. after the amount changed |
+
+Firestore collections the server writes: `invoices` (stripe* fields, status), `stripeCustomers` (one Stripe customer per WhatsApp number), `stripeEvents` (processed webhook IDs). The Admin SDK bypasses security rules, so no rule changes are needed for these.
+
+### Deploy (Google Cloud Run, same Google project as Firebase)
+
+```bash
+gcloud run deploy binalab-billing --source . --region asia-southeast1 --allow-unauthenticated \
+  --set-env-vars "^@^STUDIO_ADMIN_EMAILS=you@example.com@FIREBASE_PROJECT_ID=binalab-a7891@STUDIO_ORIGINS=https://binalab.my,https://www.binalab.my" \
+  --set-secrets STRIPE_SECRET_KEY=stripe-key:latest,STRIPE_WEBHOOK_SECRET=stripe-whsec:latest
+```
+(`^@^` makes `@` the separator, because `STUDIO_ORIGINS` itself contains a comma.)
+
+On Cloud Run the Firebase Admin SDK uses the service's own Google identity, so `FIREBASE_SERVICE_ACCOUNT` isn't needed. That identity needs the **Cloud Datastore User** role. Elsewhere (Render, Railway, a VPS), set `FIREBASE_SERVICE_ACCOUNT` to a service-account JSON from Firebase → Project settings → Service accounts.
+
+Then:
+1. Put the service URL in `BILLING_API_URL` in `firebase-config.js` on the website.
+2. Stripe Dashboard → Webhooks → add `https://<service-url>/webhooks/stripe` for **Your account** with events `invoice.paid`, `invoice.payment_failed`, `invoice.voided`, `invoice.marked_uncollectible`. Put its signing secret in `STRIPE_WEBHOOK_SECRET`.
+3. Settings → Payment methods: turn on **FPX** (and GrabPay if wanted).
+
+### Test against the sandbox
+
+```bash
+npm run test:sandbox   # needs a sandbox STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET=whsec_test in .env
+```
+
+It uses an in-memory Firestore, creates real **sandbox** invoices, simulates the paid webhook, then voids everything it made.
+
 ## Endpoints
 
 | Route | What it does |
@@ -60,8 +101,9 @@ stripe listen --forward-to localhost:4242/webhooks/stripe --forward-connect-to l
 ## Before going live
 
 - [ ] Replace the `console.log` handlers in `webhooks.ts` with database writes. Fulfil only from webhooks.
-- [ ] Store processed event IDs in your database (the in-memory `seen` set resets on restart).
-- [ ] Put auth on `/billing` and `/connect`. Only Binalab staff, or the SME that owns `:id`, may call them.
+- [x] Store processed event IDs in your database (Firestore `stripeEvents`).
+- [x] `/studio` routes require a Studio admin login.
+- [x] `/billing` and `/connect` also require a Studio admin login (open them to SMEs later). Only Binalab staff, or the SME that owns `:id`, may call them.
 - [ ] Use a live restricted key from a secrets vault, with `ALLOW_LIVE_KEYS=true` only on production. Add an IP access policy to the key.
 - [ ] Re-create webhook endpoints in live mode (live signing secrets differ).
 - [ ] Add a Content-Security-Policy allowing `https://*.stripe.com` if you embed Stripe.js.

@@ -5,6 +5,8 @@ import express, { Router } from 'express';
 import type Stripe from 'stripe';
 import { stripe, CURRENCY } from '../stripe.js';
 import { cardPaymentsStatus } from './connect.js';
+import { FieldValue } from 'firebase-admin/firestore';
+import { db } from '../firebase.js';
 
 export const webhooks = Router();
 const raw = express.raw({ type: 'application/json' }); // signature checks need the raw body
@@ -14,8 +16,18 @@ const raw = express.raw({ type: 'application/json' }); // signature checks need 
 //  - "Connected accounts" events -> STRIPE_CONNECT_WEBHOOK_SECRET
 const secrets = [process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_CONNECT_WEBHOOK_SECRET].filter(Boolean) as string[];
 
-// Stripe retries deliveries, so handle each event once. Use your DB in production.
+// Stripe retries deliveries, so handle each event once. Firestore remembers
+// processed event IDs across restarts; the in-memory set is the fallback.
 const seen = new Set<string>();
+async function alreadyHandled(id: string): Promise<boolean> {
+  if (seen.has(id)) return true;
+  if (!db) return false;
+  return (await db.collection('stripeEvents').doc(id).get()).exists;
+}
+async function markHandled(event: Stripe.Event) {
+  seen.add(event.id);
+  await db?.collection('stripeEvents').doc(event.id).set({ type: event.type, at: FieldValue.serverTimestamp() });
+}
 
 webhooks.post('/stripe', raw, async (req, res) => {
   const signature = req.header('stripe-signature') ?? '';
@@ -32,7 +44,7 @@ webhooks.post('/stripe', raw, async (req, res) => {
     res.status(400).send('Invalid signature');
     return;
   }
-  if (seen.has(event.id)) {
+  if (await alreadyHandled(event.id)) {
     res.sendStatus(200);
     return;
   }
@@ -54,6 +66,11 @@ webhooks.post('/stripe', raw, async (req, res) => {
       break;
     case 'invoice.payment_failed':
       console.warn('Invoice payment failed', event.data.object.id, sme);
+      await syncStudioInvoice(event.data.object, { stripeLastPaymentError: 'payment_failed' });
+      break;
+    case 'invoice.voided':
+    case 'invoice.marked_uncollectible':
+      await syncStudioInvoice(event.data.object);
       break;
     case 'customer.subscription.created':
     case 'customer.subscription.updated':
@@ -67,7 +84,7 @@ webhooks.post('/stripe', raw, async (req, res) => {
       break;
   }
 
-  seen.add(event.id);
+  await markHandled(event);
   res.sendStatus(200);
 });
 
@@ -103,6 +120,25 @@ async function fulfilCheckout(session: Stripe.Checkout.Session, sme?: string) {
 }
 async function markInvoicePaid(invoice: Stripe.Invoice, sme?: string) {
   console.log(`Invoice paid: ${invoice.id} ${invoice.amount_paid}`, sme ? `(SME ${sme})` : '(Binalab)');
+  if (!sme) {
+    await syncStudioInvoice(invoice, {
+      status: 'paid',
+      paidAt: FieldValue.serverTimestamp(),
+      paidAmountSen: invoice.amount_paid,
+      stripeLastPaymentError: null,
+    });
+  }
+}
+
+// Mirror a Stripe invoice's state onto the Studio invoice it came from.
+async function syncStudioInvoice(invoice: Stripe.Invoice, extra: Record<string, unknown> = {}) {
+  const id = invoice.metadata?.firestoreInvoiceId;
+  if (!id || !db) return;
+  const ref = db.collection('invoices').doc(id);
+  const current = (await ref.get()).data();
+  // Ignore events for an older link that was replaced by a newer one.
+  if (!current || current.stripeInvoiceId !== invoice.id) return;
+  await ref.update({ stripeStatus: invoice.status, updatedAt: FieldValue.serverTimestamp(), ...extra });
 }
 async function syncSubscription(sub: Stripe.Subscription) {
   console.log(`Subscription ${sub.id} is ${sub.status}`);

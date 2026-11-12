@@ -2,17 +2,24 @@ import express, { type ErrorRequestHandler } from 'express';
 import { webhooks } from './routes/webhooks.js';
 import { billing } from './routes/billing.js';
 import { connect } from './routes/connect.js';
+import { studio } from './routes/studio.js';
+import { cors } from './cors.js';
+import { requireStaff } from './firebase.js';
 
 const app = express();
 
 // Webhooks first: they need the raw body, not parsed JSON.
 app.use('/webhooks', webhooks);
+app.use(cors);
 app.use(express.json());
 
-// TODO: put your app's auth in front of these routes. Only signed-in Binalab
-// staff (or the SME that owns :id) should be able to call them.
-app.use('/billing', billing);
-app.use('/connect', connect);
+// BinaLab Studio (Firebase-authenticated staff only): payment links for invoices.
+app.use('/studio', requireStaff, studio);
+
+// Staff only for now. When SMEs log in themselves, /connect/smes/:id routes
+// should also allow the SME that owns :id.
+app.use('/billing', requireStaff, billing);
+app.use('/connect', requireStaff, connect);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });

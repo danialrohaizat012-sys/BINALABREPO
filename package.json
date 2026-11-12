@@ -4,10 +4,12 @@
   "scripts": {
     "dev": "tsx watch --env-file=.env src/server.ts",
     "start": "tsx --env-file=.env src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:sandbox": "tsx --env-file=.env test/studio-sandbox.ts"
   },
   "dependencies": {
     "express": "^5.3.0",
+    "firebase-admin": "^13.10.0",
     "https-proxy-agent": "^7.0.6",
     "stripe": "^23.1.0"
   },
