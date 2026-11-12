@@ -37,9 +37,10 @@ Firestore collections the server writes: `invoices` (stripe* fields, status), `s
 
 ```bash
 gcloud run deploy binalab-billing --source . --region asia-southeast1 --allow-unauthenticated \
-  --set-env-vars STUDIO_ADMIN_EMAILS=you@example.com,FIREBASE_PROJECT_ID=binalab-a7891,STUDIO_ORIGINS=https://binalab.my,https://www.binalab.my \
+  --set-env-vars "^@^STUDIO_ADMIN_EMAILS=you@example.com@FIREBASE_PROJECT_ID=binalab-a7891@STUDIO_ORIGINS=https://binalab.my,https://www.binalab.my" \
   --set-secrets STRIPE_SECRET_KEY=stripe-key:latest,STRIPE_WEBHOOK_SECRET=stripe-whsec:latest
 ```
+(`^@^` makes `@` the separator, because `STUDIO_ORIGINS` itself contains a comma.)
 
 On Cloud Run the Firebase Admin SDK uses the service's own Google identity, so `FIREBASE_SERVICE_ACCOUNT` isn't needed. That identity needs the **Cloud Datastore User** role. Elsewhere (Render, Railway, a VPS), set `FIREBASE_SERVICE_ACCOUNT` to a service-account JSON from Firebase → Project settings → Service accounts.
 
